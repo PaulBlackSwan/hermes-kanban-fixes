@@ -5,6 +5,10 @@
       "after_sha256": "c6dd8cfdfbdea7b8a6213e7f857f23a94a63e3238ba8d82fb2f0b10c64be2dc6",
       "before_sha256": "a2f2f04c5d517ae737be61c16a319470edae4216f719da59527d542dea0e91ed"
     },
+    "gateway/session_local.py": {
+      "after_sha256": "512782a218006acc723c319853ce806624466713475641b08d3ec91b64670523",
+      "before_sha256": "8597e45697177c3caa206103bdc5c7fda0f55050707e27ca01fed5bfd586fd90"
+    },
     "hermes_cli/kanban_db.py": {
       "after_sha256": "e3e3ecbea4c6b6a8aa0c9b3d3f0789f739ff1b3e35f7e919a1ff2c5e814f3ca2",
       "before_sha256": "fab46dc6b1df90c77275a21c467ce003ce1d9436f68dcb8ddcdb89c1d3c4a31b"
@@ -15,6 +19,10 @@
     },
     "tests/gateway/test_kanban_block_followup_wake.py": {
       "after_sha256": "193994c707dd0b4be8801552f0e4e29f121fa7729066bdfc1828b98e5ce0f3a7",
+      "before_sha256": null
+    },
+    "tests/gateway/test_local_kanban_wake.py": {
+      "after_sha256": "c6caa7ec911a2becee3ab1799cb5b61c4ecb8f3a20a2936541df9ec3617ca8ed",
       "before_sha256": null
     },
     "tests/hermes_cli/test_kanban_block_followup.py": {
@@ -30,7 +38,7 @@
       "before_sha256": "22e7ce2953eeb665c0324f22a9456005ccf14df3086bf21fc878c1d6d2c6e7f6"
     }
   },
-  "patch_sha256": "299c6a7446367e0c4f401d27846a4334fca1ba28ce04e8deaab6d0380002d023",
+  "patch_sha256": "45c3993ae0ecf4b3877b3645133a787cbe83931315f8a8ac1a07cfb5158fe64e",
   "schema": 1,
-  "version": "0.1.0-rc.1"
+  "version": "0.1.0-rc.2"
 }

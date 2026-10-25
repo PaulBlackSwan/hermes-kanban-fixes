@@ -15,10 +15,12 @@ import subprocess
 import sys
 
 BASE = 'bf0203a794a07aac3ff764972ab9087baa4e4f4e'
-VERSION = '0.1.0-rc.1'
-MANIFEST_SHA256 = '590ae5c9b450d4bbe0b4b29485acc5a5fc6e28ccffb46962eb9d8673431348af'
+VERSION = '0.1.0-rc.2'
+MANIFEST_SHA256 = '79314a8e6a0bdf1567e5f1ef4d998a7470cbd9b6f71d366d58011acbbc49d384'
 NAMES = (
     'gateway/kanban_watchers_notifier.py',
+    'gateway/session_local.py',
+    'tests/gateway/test_local_kanban_wake.py',
     'hermes_cli/kanban_db.py',
     'tui_gateway/session_notifications.py',
     'scripts/kanban_block_followup.py',

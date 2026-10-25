@@ -1,16 +1,16 @@
-# Hermes Kanban fixes — 0.1.0-rc.1
+# Hermes Kanban fixes — 0.1.0-rc.2
 
 Standalone, offline **source patch bundle**, not a runtime plugin. This release
-preserves seven qualified Kanban changes without redesigning their behavior.
+preserves the qualified Kanban changes and fixes local-profile wake routing.
 It contains no audio integration and does not install or enable any plugin.
 
 ## Exact compatibility
 
 Only Git checkouts with HEAD exactly
-`bf0203a794a07aac3ff764972ab9087baa4e4f4e` are supported. Each of the seven
+`bf0203a794a07aac3ff764972ab9087baa4e4f4e` are supported. Each of the nine
 paths must also match its before SHA-256 (or be absent for new files).
 A different revision, partial application or local edits to these targets is
-refused. An already-applied result requires **all seven** after hashes, not
+refused. An already-applied result requires **all nine** after hashes, not
 merely a matching version or receipt. Unrelated files are not reset or stashed.
 
 `manifest.json` records before/after hashes, explicit null for absent base paths,
@@ -26,7 +26,14 @@ Obtain the ZIP and its checksum from a trusted channel.
 2. **Block follow-up and administrative closure:** watcher wake guidance,
    completion from triage, and a read-only `BLOCK_FOLLOWUP_V1` reporting script
    using existing native card comments. No database migration or scheduler.
-3. **Regression tests:** three new test files accompany the four runtime paths.
+3. **Local-profile wake routing:** bind `LocalSessionAdapter.gateway_runner` to
+   `authority.runner`, allowing canonical automation admission into the owning
+   profile FIFO. Reconstructed notifier sources remain unauthorized directly;
+   the canonical wake path resolves the registered source without weakening
+   identity checks. This is a core fix, not a read-only follow-up plugin change.
+4. **Regression tests:** four new test files accompany the five runtime paths,
+   including real local adapter/authority admission for synthetic default and
+   beta profiles using temporary SQLite databases.
 
 One patch avoids ambiguous ordering between interdependent notification and
 follow-up changes. The script only reports; recording comments, activating a

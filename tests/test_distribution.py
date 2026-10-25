@@ -158,9 +158,26 @@ class Distribution(unittest.TestCase):
         p = self.cli('--rollback', '--apply', root=release)
         self.assertEqual(p.returncode, 0, p.stdout)
 
+    def test_local_wake_fix_and_regression_are_installed(self):
+        self.assertIn('gateway/session_local.py', self.manifest['files'])
+        self.assertIsNone(self.manifest['files']['tests/gateway/test_local_kanban_wake.py']['before_sha256'])
+        self.ok('--apply')
+        adapter = (self.source / 'gateway/session_local.py').read_text()
+        self.assertIn('        self.authority = authority\n        self.gateway_runner = authority.runner\n', adapter)
+        regression = (self.source / 'tests/gateway/test_local_kanban_wake.py').read_text()
+        self.assertIn("['default', 'beta']", regression)
+        self.assertIn('assert not adapter.authorize_source(source)', regression)
+        # Reconstruct the old seven-path release: rc.2 must not accept it.
+        original = subprocess.check_output(['git', '-C', str(self.source), 'show', BASE + ':gateway/session_local.py'])
+        (self.source / 'gateway/session_local.py').write_bytes(original)
+        (self.source / 'tests/gateway/test_local_kanban_wake.py').unlink()
+        before = self.snapshot()
+        self.refused('--apply')
+        self.assertEqual(before, self.snapshot())
+
     def test_backup_tamper_refused(self):
         self.ok('--apply')
-        backup = self.source / '.hermes-kanban-fixes' / '0.1.0-rc.1' / 'before' / self.first
+        backup = self.source / '.hermes-kanban-fixes' / self.manifest['version'] / 'before' / self.first
         backup.write_text('tampered backup')
         before = self.snapshot()
         self.refused('--rollback', '--apply')

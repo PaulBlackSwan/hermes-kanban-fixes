@@ -628,3 +628,77 @@ diff --git a/tui_gateway/session_notifications.py b/tui_gateway/session_notifica
      "gave_up": ("✖", lambda t, p, title: " gave up after repeated spawn failures"
                  + (f"\n{str(p.get('error'))[:200]}" if p.get("error") else "")),
      "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),
+diff --git a/gateway/session_local.py b/gateway/session_local.py
+index 2cff15e596..2ccc1ce55e 100644
+--- a/gateway/session_local.py
++++ b/gateway/session_local.py
+@@ -24,6 +24,7 @@ class LocalSessionAdapter(BasePlatformAdapter):
+     def __init__(self, authority):
+         super().__init__(PlatformConfig(enabled=True), Platform.LOCAL)
+         self.authority = authority
++        self.gateway_runner = authority.runner
+         self.sources = {}
+         self.policies = {}
+ 
+diff --git a/tests/gateway/test_local_kanban_wake.py b/tests/gateway/test_local_kanban_wake.py
+new file mode 100644
+index 0000000000..aa69bb051d
+--- /dev/null
++++ b/tests/gateway/test_local_kanban_wake.py
+@@ -0,0 +1,56 @@
++"""Local Kanban wakes use the owning authority FIFO, including served Bot Chats.
++
++Real LocalSessionAdapter, deliver_wake, profile authorities and SQLite admission.
++Only the model call is stubbed by the existing producer fixture.
++"""
++import pytest
++
++from gateway.config import Platform
++from gateway.session import SessionSource
++from gateway.session_authorities import owner_scope
++from gateway.session_local_recovery import local_adapter_map
++from gateway.wake import deliver_wake
++from tests.gateway.test_local_producer_admission import _Gateway
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('profile', ['default', 'beta'])
++async def test_local_kanban_wake_reaches_owning_profile_without_a_legacy_handler(
++    tmp_path, monkeypatch, profile,
++):
++    gateway = _Gateway(tmp_path, monkeypatch)
++    await gateway.start()
++    try:
++        authority = gateway.primary if profile == 'default' else gateway.secondary
++        created = gateway.create(authority, gateway.connect(authority), 'kanban-origin', 'gui')
++        session_id = created.session_id
++        await gateway.watch(authority, session_id)
++        live = authority.sessions[session_id]
++        adapter = local_adapter_map(authority)[Platform.LOCAL]
++        # Match the notifier: a reconstructed source, not the registered object.
++        source = SessionSource(
++            platform=Platform.LOCAL, chat_id=live.source.chat_id,
++            chat_type=live.source.chat_type, user_id=live.source.user_id,
++            profile=live.source.profile,
++        )
++        assert source is not live.source
++        assert not adapter.authorize_source(source)
++        assert not gateway.rows(authority, session_id)
++
++        # The notifier enters its subscriber's owner scope before waking it.
++        with owner_scope(authority):
++            await deliver_wake(adapter, source=source, text='SYNTHETIC_KANBAN_HANDOFF')
++        await gateway.settled(authority, session_id, 1)
++
++        rows = gateway.rows(authority, session_id)
++        assert len(rows) == 1
++        assert rows[0]['outcome'] == 'completed'
++        assert 'local_automation_v1' in rows[0]['payload']
++        assert any(turn.text == 'SYNTHETIC_KANBAN_HANDOFF' for turn in gateway.turns)
++        if profile == 'beta':
++            assert not gateway.rows(gateway.primary, session_id)
++            assert gateway.turns[-1].policy[0] == 'beta-model'
++        # Fixing delivery must not weaken local source identity authorization.
++        assert not adapter.authorize_source(source)
++    finally:
++        await gateway.stop()

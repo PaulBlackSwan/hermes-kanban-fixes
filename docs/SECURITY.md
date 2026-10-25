@@ -2,7 +2,7 @@
 
 - Source changes are opt-in via `--source` and `--apply`; rollback also defaults
   to dry-run. No profile auto-detection, network, token lookup or credentials.
-- Seven exact paths only. Unknown HEAD, edited/missing target, partial install,
+- Nine exact paths only. Unknown HEAD, edited/missing target, partial install,
   symlink ancestors/leaf, traversal, special files and hardlinks are refused.
 - The manifest hash is pinned in the installer. Patch bytes are bound by the
   manifest. Archive checksums bind all release members. None is a signature.

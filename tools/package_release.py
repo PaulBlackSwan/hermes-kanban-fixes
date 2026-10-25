@@ -12,7 +12,7 @@ import zipfile
 from install import ROOT, package, read, safe
 
 PUBLIC = frozenset({
-    'LICENSE', 'README.md', 'manifest.json',
+    'LICENSE', 'README.md', 'CHANGELOG.md', 'manifest.json',
     'docs/INSTALL.md', 'docs/SECURITY.md', 'docs/TESTING.md',
     'tools/install.py', 'tools/package_release.py',
     'tests/test_distribution.py', 'patches/kanban-fixes.patch',

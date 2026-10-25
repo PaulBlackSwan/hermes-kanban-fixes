@@ -16,7 +16,7 @@ installer has a disposable HOME. `TMPDIR` must name a user-owned scratch directo
 Without `KANBAN_TEST_REPOSITORY`, fixture tests are explicitly skipped, not proof
 of a successful acceptance run. No network or dependencies are needed.
 
-Coverage includes default no-write dry-run, explicit apply, all-seven hashes,
+Coverage includes default no-write dry-run, explicit apply, all-nine hashes,
 idempotence, rollback dry-run, rollback, unrelated file preservation, modified or
 missing targets, partial state, symlink leaf and ancestors, path traversal,
 unsupported HEAD, altered manifest/patch/backup, reproducible archives, member
@@ -28,10 +28,21 @@ The unified patch includes existing qualified regression tests. Run the target
 checkout's documented isolated runner for these files and relevant regressions:
 
 - `tests/gateway/test_kanban_block_followup_wake.py`
+- `tests/gateway/test_local_kanban_wake.py` (uses the base's existing
+  `tests/gateway/test_local_producer_admission.py` helper)
 - `tests/hermes_cli/test_kanban_block_followup.py`
 - `tests/tui_gateway/test_kanban_block_followup_notifications.py`
 
-The parent reran **146 runtime tests across 16 files, 0 failed**, with the checkout's isolated runner after applying the corrected public patch to a disposable exact-base clone. Separately, **14 distribution tests passed without skips**. Publication changes include an anonymized fixture, trailing blank-line normalization and the one independent review's UTC-boundary fix: extreme timezone dates become per-comment validation errors rather than terminating every card's report. The two boundary regressions are included. Corrections are parent-verified, not independently re-approved in a second review. Re-run the relevant tests for your own environment.
+For rc.2, **160 runtime tests across 18 files passed, 0 failed**, using the
+checkout's isolated runner in a disposable exact-base clone. This includes the
+16 previously qualified Kanban files, the existing local producer admission
+suite and the new default/beta local wake regression. Removing only the runner
+binding reproduced **2 failing local wake cases**; restoring it passed both.
+Runtime tests use temporary state, not live databases. Separately, **15
+distribution tests passed without skips**, and the same suite was rerun from
+the final extracted archive. Prior anonymized fixtures and UTC-boundary
+validation corrections remain unchanged. No new independent review is claimed.
+Re-run the relevant tests for your own environment.
 
 No live deployment, route receipt or background-process reload is implied.
 
