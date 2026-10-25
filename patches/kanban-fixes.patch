@@ -1,0 +1,630 @@
+diff --git a/gateway/kanban_watchers_notifier.py b/gateway/kanban_watchers_notifier.py
+--- a/gateway/kanban_watchers_notifier.py
++++ b/gateway/kanban_watchers_notifier.py
+@@ -600,6 +600,14 @@
+         if self.wake_review_detail:
+             synth += "\n" + t("gateway.kanban.wake.review_detail", reason=self.wake_review_detail)
+         self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance")
++        if self.wake_kinds & {"blocked", "block_loop_detected"}:
++            self.synth += (
++                "\nRead the full kanban_show card, recent comments and review evidence. "
++                "Separate already-authorized independent work from the blocker and act on it now; "
++                "otherwise record the next action, its owner, condition and a dated review "
++                "in a BLOCK_FOLLOWUP_V1 comment for the current block event. "
++                "No automatic unblock or retry without a changed prerequisite."
++            )
+ 
+     def _log_woke(self) -> None:
+         logger.info("kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -2642,7 +2642,7 @@
+     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
+     fire_lifecycle_hook: bool = True, force: bool = False,
+ ) -> bool:
+-    """``running|ready|blocked|review -> done``; records ``result``.
++    """``running|ready|blocked|triage|review -> done``; records ``result``.
+ 
+     ``ready`` is accepted for manual CLI completion, ``review`` for human
+     approval. A ``running`` task under a live claim is only completed with
+@@ -2701,7 +2701,7 @@
+                        block_kind   = NULL,
+                        block_recurrences = 0
+                  WHERE id = ?
+-                   AND status IN ('running', 'ready', 'blocked', 'review')
++                   AND status IN ('running', 'ready', 'blocked', 'triage', 'review')
+                 """
+         params: tuple = (result, now, task_id)
+         if expected_run_id is not None:
+diff --git a/scripts/kanban_block_followup.py b/scripts/kanban_block_followup.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/kanban_block_followup.py
+@@ -0,0 +1,146 @@
++#!/usr/bin/env python3
++"""Read-only blocked-card control; durable follow-up traces are native comments.
++
++No scheduler, network, delivery, state writes, unblock or retry is performed.
++Use the native bounded /loop for wakeups, only after explicit activation approval.
++"""
++from __future__ import annotations
++
++import argparse
++from datetime import UTC, datetime
++import json
++from pathlib import Path
++import sqlite3
++import sys
++
++PREFIX = "BLOCK_FOLLOWUP_V1 "
++STATES = {"waiting", "resolved"}
++
++
++def instant(value: str) -> datetime:
++    if not isinstance(value, str) or not value.strip():
++        raise ValueError("review_at must be a non-empty ISO 8601 string")
++    result = datetime.fromisoformat(value)
++    if result.tzinfo is None:
++        raise ValueError("review_at must include an explicit timezone")
++    try:
++        return result.astimezone(UTC)
++    except OverflowError as exc:
++        raise ValueError("review_at is outside the supported UTC range") from exc
++
++
++def validate_trace(data: dict, event_id: int) -> dict:
++    if not isinstance(data, dict) or data.get("version") != 1:
++        raise ValueError("expected follow-up version 1 object")
++    if type(data.get("event_id")) is not int or data["event_id"] != event_id:
++        raise ValueError("trace does not match current block event")
++    for name in ("owner", "next_action", "condition"):
++        if not isinstance(data.get(name), str) or not data[name].strip():
++            raise ValueError(f"missing {name}")
++    if data.get("state") not in STATES:
++        raise ValueError("state must be waiting or resolved")
++    instant(data["review_at"])
++    return data
++
++
++def trace_from_comments(comments: list[dict], event_id: int, trusted: set[str]):
++    for comment in reversed(comments):
++        if comment["author"] not in trusted or not comment["body"].startswith(PREFIX):
++            continue
++        try:
++            value = json.loads(comment["body"][len(PREFIX):])
++            # An old incident's trace must never silence a new block.
++            if isinstance(value, dict) and value.get("event_id") != event_id:
++                continue
++            return validate_trace(value, event_id), None, comment["id"]
++        except (ValueError, TypeError, KeyError) as exc:
++            return None, f"invalid follow-up comment {comment['id']}: {exc}", comment["id"]
++    return None, None, None
++
++
++def inspect_card(conn, task: dict, coordinator: str, session_id: str, now: datetime) -> dict:
++    row = conn.execute(
++        "SELECT id, kind, payload, created_at FROM task_events WHERE task_id=? "
++        "AND kind IN ('blocked','block_loop_detected','gave_up','status') ORDER BY id DESC LIMIT 1",
++        (task["id"],),
++    ).fetchone()
++    event = dict(row) if row else {"id": 0, "kind": "missing", "payload": None, "created_at": 0}
++    payload = json.loads(event["payload"]) if event["payload"] else {}
++    reason = payload.get("reason") or payload.get("error") or task.get("last_failure_error") or "Reason not recorded"
++    comments = [dict(r) for r in conn.execute(
++        "SELECT id,author,body FROM task_comments WHERE task_id=? ORDER BY id", (task["id"],)
++    )]
++    trusted = {coordinator, task.get("assignee") or ""}
++    trace, issue, comment_id = trace_from_comments(comments, event["id"], trusted)
++    sub = conn.execute(
++        "SELECT last_event_id FROM kanban_notify_subs WHERE task_id=? "
++        "AND platform='tui' AND chat_id=? AND notifier_profile=?",
++        (task["id"], session_id, coordinator),
++    ).fetchone()
++    if trace:
++        due = instant(trace["review_at"]) <= now
++        kind = "administrative_close" if trace["state"] == "resolved" else "review_due" if due else "waiting"
++        owner, action = trace["owner"], trace["next_action"]
++        condition, review_at = trace["condition"], trace["review_at"]
++    else:
++        due, kind, owner = True, "missing_followup", coordinator
++        action = "Inspect kanban_show; record owner, concrete next action and review_at. No automatic retry."
++        condition, review_at = "Coordinator records a current follow-up trace", None
++    return {
++        "task_id": task["id"], "status": task["status"], "event_id": event["id"],
++        "block_kind": task.get("block_kind"), "reason": reason, "owner": owner,
++        "next_action": action, "condition": condition, "review_at": review_at,
++        "state": trace["state"] if trace else "unmanaged", "control_kind": kind,
++        "due": due, "trace_comment_id": comment_id, "trace_error": issue,
++        "route_present": sub is not None,
++        # Cursor movement is NOT a user/agent receipt. Kept deliberately separate.
++        "cursor_at_or_after_block": bool(sub and sub["last_event_id"] >= event["id"]),
++        "receipt_verified_by_this_control": False,
++    }
++
++
++def report(db_path: Path, *, coordinator: str, session_id: str, now: datetime | None = None) -> dict:
++    now = now or datetime.now(UTC)
++    if now.tzinfo is None:
++        raise ValueError("now must be timezone-aware")
++    # mode=ro refuses a missing DB and cannot migrate, initialize or create one.
++    conn = sqlite3.connect(db_path.expanduser().resolve().as_uri() + "?mode=ro", uri=True)
++    conn.row_factory = sqlite3.Row
++    try:
++        conn.execute("PRAGMA query_only=ON")
++        conn.execute("BEGIN")
++        tasks = [dict(r) for r in conn.execute(
++            "SELECT * FROM tasks WHERE status IN ('blocked','triage') AND "
++            "(created_by=? OR EXISTS (SELECT 1 FROM kanban_notify_subs s "
++            "WHERE s.task_id=tasks.id AND s.platform='tui' AND s.chat_id=? "
++            "AND s.notifier_profile=?)) ORDER BY id",
++            (coordinator, session_id, coordinator),
++        )]
++        cards = [inspect_card(conn, task, coordinator, session_id, now) for task in tasks]
++        return {
++            "version": 1, "read_only": True, "coordinator": coordinator,
++            "session_id": session_id, "checked_at": now.astimezone(UTC).isoformat(),
++            "scoped_count": len(cards), "due_count": sum(card["due"] for card in cards),
++            "cards": cards, "automatic_timer_created": False,
++        }
++    finally:
++        conn.close()
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--db", type=Path, required=True)
++    parser.add_argument("--coordinator", required=True)
++    parser.add_argument("--session-id", required=True)
++    args = parser.parse_args()
++    try:
++        result = report(args.db, coordinator=args.coordinator, session_id=args.session_id)
++    except (sqlite3.Error, ValueError, TypeError, KeyError, OSError) as exc:
++        print(json.dumps({"ok": False, "error": str(exc), "read_only": True}), file=sys.stderr)
++        return 2
++    print(json.dumps(result, ensure_ascii=False, indent=2))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tests/gateway/test_kanban_block_followup_wake.py b/tests/gateway/test_kanban_block_followup_wake.py
+new file mode 100644
+--- /dev/null
++++ b/tests/gateway/test_kanban_block_followup_wake.py
+@@ -0,0 +1,33 @@
++"""Synthetic gateway wake construction, without admission or network sends."""
++from types import SimpleNamespace
++
++import pytest
++
++from gateway.kanban_watchers_notifier import _KanbanNotification
++
++
++@pytest.mark.parametrize("kind", ["blocked", "block_loop_detected"])
++def test_gateway_block_wake_requires_full_card_and_dated_next_action(kind):
++    task = SimpleNamespace(title="Synthetic", assignee="worker", created_by="coordinator")
++    notice = _KanbanNotification(None, {"sub": {
++        "task_id": "synthetic", "platform": "local", "chat_id": "exact-session",
++        "notifier_profile": "coordinator", "delivery_mode": "wake"},
++        "task": task, "board": "default", "events": [SimpleNamespace(kind=kind, payload={})]},
++        platform_cls=None, sub_fail_counts={})
++    notice.is_push_adapter = False
++    notice.build_wake_text()
++    assert notice.session_key == "exact-session"
++    assert "BLOCK_FOLLOWUP_V1" in notice.synth
++    assert "kanban_show" in notice.synth
++    assert "next action" in notice.synth and "dated review" in notice.synth
++    assert "No automatic unblock" in notice.synth
++
++
++def test_completion_wake_does_not_request_a_block_trace():
++    notice = _KanbanNotification(None, {"sub": {
++        "task_id": "synthetic", "platform": "local", "chat_id": "exact-session", "delivery_mode": "wake"},
++        "task": SimpleNamespace(title="Synthetic", assignee="worker"), "board": "default",
++        "events": [SimpleNamespace(kind="completed", payload={})]}, platform_cls=None, sub_fail_counts={})
++    notice.is_push_adapter = False
++    notice.build_wake_text()
++    assert "BLOCK_FOLLOWUP_V1" not in notice.synth
+diff --git a/tests/hermes_cli/test_kanban_block_followup.py b/tests/hermes_cli/test_kanban_block_followup.py
+new file mode 100644
+--- /dev/null
++++ b/tests/hermes_cli/test_kanban_block_followup.py
+@@ -0,0 +1,314 @@
++"""Blocked-card controls use native comments, cursor delivery and bounded loops."""
++from datetime import UTC, datetime
++import importlib.util
++import json
++from pathlib import Path
++import subprocess
++import sys
++import threading
++
++import pytest
++
++from hermes_cli import kanban_db as kb
++from hermes_cli import kanban_db_connect as kbc
++from hermes_cli import kanban_db_notify as kbn
++from hermes_cli import loops
++from tui_gateway import server
++
++spec = importlib.util.spec_from_file_location(
++    "block_control", Path(__file__).resolve().parents[2] / "scripts/kanban_block_followup.py"
++)
++control = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(control)
++NOW = datetime(2026, 10, 24, 10, tzinfo=UTC)
++
++
++@pytest.fixture
++def incident():
++    with kbc.connect_closing() as conn:
++        tid = kb.create_task(conn, title="external prerequisite", assignee="worker", created_by="coordinator")
++        kbn.add_notify_sub(conn, task_id=tid, platform="tui", chat_id="coordinator-session",
++                           notifier_profile="coordinator")
++        kb.claim_task(conn, tid)
++        assert kb.block_task(conn, tid, reason="Maintainer must approve workflows", kind="capability")
++        event = [ev for ev in kb.list_events(conn, tid) if ev.kind == "blocked"][-1]
++        yield conn, tid, event.id
++
++
++def record(conn, tid, event_id, **changes):
++    data = {"version": 1, "event_id": event_id, "owner": "coordinator",
++            "next_action": "Ask the owner to approve the prepared maintainer request",
++            "condition": "Workflows approved on exact head", "review_at": "2026-10-25T10:00:00Z",
++            "state": "waiting"}
++    data.update(changes)
++    kb.add_comment(conn, tid, "coordinator", control.PREFIX + json.dumps(data))
++    return data
++
++
++def scan():
++    return control.report(kb.kanban_db_path(), coordinator="coordinator",
++                          session_id="coordinator-session", now=NOW)
++
++
++def test_missing_followup_is_actionable_not_automatic_retry(incident):
++    conn, tid, eid = incident
++    state = kb.get_task(conn, tid)
++    result = scan()
++    assert result["scoped_count"] == result["due_count"] == 1
++    card = result["cards"][0]
++    assert card["event_id"] == eid and card["owner"] == "coordinator"
++    assert "No automatic retry" in card["next_action"]
++    assert not card["receipt_verified_by_this_control"]
++    assert kb.get_task(conn, tid) == state
++
++
++def test_acknowledged_future_wait_and_due_review(incident):
++    conn, tid, eid = incident
++    data = record(conn, tid, eid)
++    assert scan()["due_count"] == 0
++    result = control.report(kb.kanban_db_path(), coordinator="coordinator",
++                            session_id="coordinator-session", now=control.instant(data["review_at"]))
++    assert result["due_count"] == 1
++    assert result["cards"][0]["next_action"] == data["next_action"]
++    assert result["cards"][0]["control_kind"] == "review_due"
++
++
++def test_resolved_triage_gets_admin_action_without_unblock(incident):
++    conn, tid, _ = incident
++    assert kb.unblock_task(conn, tid)
++    assert kb.claim_task(conn, tid)
++    assert kb.block_task(conn, tid, kind="capability", reason="unchanged external prerequisite")
++    eid = kb.list_events(conn, tid)[-1].id
++    record(conn, tid, eid, state="resolved", review_at="2026-10-24T09:00:00Z",
++           next_action="Apply approved administrative completion, do not redeploy")
++    card = scan()["cards"][0]
++    assert card["control_kind"] == "administrative_close"
++    assert card["due"]
++    assert kb.get_task(conn, tid).status == "triage"
++    assert kb.get_task(conn, tid).block_recurrences == kb.BLOCK_RECURRENCE_LIMIT
++
++
++def test_old_incident_or_untrusted_author_cannot_silence_block(incident):
++    conn, tid, eid = incident
++    data = record(conn, tid, eid - 1)
++    kb.add_comment(conn, tid, "foreign-profile", control.PREFIX + json.dumps({**data, "event_id": eid}))
++    assert scan()["cards"][0]["control_kind"] == "missing_followup"
++
++
++@pytest.mark.parametrize("changes", [{"review_at": "2026-10-25T10:00:00"}, {"owner": ""},
++                                      {"next_action": ""}, {"state": "closed"}])
++def test_malformed_trace_is_reported_not_silent(incident, changes):
++    conn, tid, eid = incident
++    record(conn, tid, eid, **changes)
++    card = scan()["cards"][0]
++    assert card["due"] and card["trace_error"]
++
++
++@pytest.mark.parametrize("review_at", [None, 123, [], {}, "0001-01-01T00:00:00+01:00",
++                                      "9999-12-31T23:59:59-01:00"],
++                         ids=["null", "integer", "list", "object", "utc-underflow", "utc-overflow"])
++def test_invalid_date_preserves_other_cards_and_cli_readonly_report(incident, review_at):
++    conn, tid, eid = incident
++    record(conn, tid, eid, review_at=review_at)
++    healthy = kb.create_task(conn, title="Separate prerequisite", assignee="worker",
++                             created_by="coordinator")
++    assert kb.claim_task(conn, healthy)
++    assert kb.block_task(conn, healthy, reason="Separate approval pending", kind="capability")
++    healthy_eid = [ev.id for ev in kb.list_events(conn, healthy) if ev.kind == "blocked"][-1]
++    data = record(conn, healthy, healthy_eid, review_at="2099-10-25T10:00:00Z")
++    before = tuple(conn.iterdump())
++
++    result = scan()
++    process = subprocess.run(
++        [sys.executable, str(Path(__file__).resolve().parents[2] / "scripts/kanban_block_followup.py"), "--db", str(kb.kanban_db_path()),
++         "--coordinator", "coordinator", "--session-id", "coordinator-session"],
++        capture_output=True, text=True, timeout=30, check=False,
++    )
++    assert process.returncode == 0, process.stderr
++    assert process.stderr == ""
++    for report in (result, json.loads(process.stdout)):
++        assert report["read_only"] and not report["automatic_timer_created"]
++        assert report["scoped_count"] == 2 and report["due_count"] == 1
++        cards = {card["task_id"]: card for card in report["cards"]}
++        invalid, valid = cards[tid], cards[healthy]
++        assert invalid["due"] and invalid["control_kind"] == "missing_followup"
++        assert invalid["state"] == "unmanaged" and invalid["review_at"] is None
++        expected_error = ("review_at is outside the supported UTC range" if isinstance(review_at, str)
++                          else "review_at must be a non-empty ISO 8601 string")
++        assert expected_error in invalid["trace_error"]
++        assert invalid["trace_comment_id"] is not None
++        assert not valid["due"] and valid["control_kind"] == "waiting"
++        assert valid["trace_error"] is None and valid["review_at"] == data["review_at"]
++        assert valid["next_action"] == data["next_action"]
++    assert tuple(conn.iterdump()) == before
++
++
++def test_other_coordinator_and_terminal_tasks_excluded(incident):
++    conn, tid, _ = incident
++    other = kb.create_task(conn, title="private subject", assignee="foreign-profile", created_by="other-owner")
++    kb.claim_task(conn, other)
++    assert kb.block_task(conn, other, reason="private prerequisite", kind="capability")
++    result = scan()
++    assert [x["task_id"] for x in result["cards"]] == [tid]
++    assert "private prerequisite" not in json.dumps(result)
++    assert kb.complete_task(conn, tid, summary="Verified completion")
++    assert scan()["scoped_count"] == 0
++
++
++def test_readonly_scan_does_not_write_or_create_missing_db(incident, tmp_path):
++    conn, _, _ = incident
++    before = list(conn.execute("SELECT * FROM task_events"))
++    for _ in range(3):
++        scan()
++    assert list(conn.execute("SELECT * FROM task_events")) == before
++    missing = tmp_path / "missing.db"
++    with pytest.raises(Exception):
++        control.report(missing, coordinator="coordinator", session_id="coordinator-session", now=NOW)
++    assert not missing.exists()
++
++
++def test_native_new_block_receipt_only_exact_session_and_once(incident, monkeypatch):
++    conn, tid, _ = incident
++    state = kb.get_task(conn, tid)
++    receipts = []
++    emitted = []
++    session = {"session_key": "coordinator-session", "running": True,
++               "history_lock": threading.RLock()}
++    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
++    def submit(rid, sid, sess, text, **kwargs):
++        receipts.append((sid, text))
++        sess["running"] = False
++        return True
++    monkeypatch.setattr(server, "_run_prompt_submit", submit)
++    assert server._collect_kanban_notifications({"session_key": "foreign"}) == []
++    server._notif_poll_kanban("coordinator-ui", session)
++    assert not receipts and session["_kanban_pending"]
++    session["running"] = False
++    server._notif_poll_kanban("coordinator-ui", session)
++    server._notif_poll_kanban("coordinator-ui", session)
++    assert len(receipts) == 1
++    assert receipts[0][0] == "coordinator-ui" and tid in receipts[0][1]
++    assert "@coordinator" in receipts[0][1]
++    assert "next action" in receipts[0][1] and "dated review" in receipts[0][1]
++    assert "Maintainer must approve workflows" in receipts[0][1]
++    assert any(e[0] == "status.update" for e in emitted)
++    assert kb.get_task(conn, tid) == state
++
++
++def test_native_three_controls_baseline_plus_two_reminders_then_stop(incident, monkeypatch):
++    conn, tid, eid = incident
++    record(conn, tid, eid, review_at="2026-10-25T10:00:00Z")
++    clock = [NOW.timestamp()]
++    monkeypatch.setattr(loops.time, "time", lambda: clock[0])
++    parsed = loops.parse_loop_args("24h Inspect blocked-card follow-up --times 3")
++    assert not parsed["error"]
++    sid = "bounded-control-session"
++    manager = loops.LoopManager(sid)
++    manager.set(parsed["prompt"], interval_seconds=parsed["interval_seconds"], times=parsed["times"])
++    assert manager.is_due()  # Native /loop first control is immediate, not tomorrow.
++    receipts = []
++    for tick in range(3):
++        active = loops.LoopManager(sid)  # Reload durable state every time.
++        assert active.is_due()
++        assert active.fire_tick()
++        assert not loops.LoopManager(sid).is_due()
++        result = control.report(kb.kanban_db_path(), coordinator="coordinator",
++                                session_id="coordinator-session", now=datetime.fromtimestamp(clock[0], UTC))
++        receipts.append(result["due_count"])
++        decision = active.complete_tick("Control completed; awaiting external prerequisite")
++        if tick < 2:
++            assert not decision["stopped"] and not active.is_due()
++        clock[0] += 86400
++    assert receipts == [0, 1, 1]
++    assert decision["stopped"] and loops.LoopManager(sid).state.status == "done"
++    assert not loops.LoopManager(sid).is_due()
++    assert kb.get_task(conn, tid).status == "blocked"
++
++
++def test_native_loop_early_stop_marker(incident):
++    manager = loops.LoopManager("resolved-control-session")
++    manager.set("Inspect follow-up", interval_seconds=86400, times=3)
++    assert manager.fire_tick()
++    assert manager.complete_tick("Nothing left to follow\nLOOP_COMPLETE")["stopped"]
++    assert not loops.LoopManager("resolved-control-session").is_due()
++
++
++def test_approved_triage_completes_directly_without_dispatchable_intermediate(incident):
++    conn, tid, _ = incident
++    kb.unblock_task(conn, tid)
++    kb.claim_task(conn, tid)
++    kb.block_task(conn, tid, kind="capability", reason="Second block")
++    assert kb.get_task(conn, tid).status == "triage"
++    before = kb.list_events(conn, tid)[-1].id
++    with pytest.raises(kb.EmptyCompletionError):
++        kb.complete_task(conn, tid, summary=" ")
++    assert kb.get_task(conn, tid).status == "triage"
++    assert not kb.complete_task(conn, tid, summary="verified", expected_run_id=999999)
++    assert kb.complete_task(conn, tid, summary="Verified deployment and independent approval",
++                            metadata={"review_task": "independent-review", "approval": "confirmed"})
++    assert kb.get_task(conn, tid).status == "done"
++    events = [e.kind for e in kb.list_events(conn, tid) if e.id > before]
++    assert "completed" in events
++    assert "unblocked" not in events and "claimed" not in events
++    assert scan()["scoped_count"] == 0
++
++
++def test_pr_gate_still_prevents_triage_completion(incident, monkeypatch):
++    from hermes_cli import kanban_pr_acceptance_store
++    conn, tid, _ = incident
++    kb.unblock_task(conn, tid)
++    kb.claim_task(conn, tid)
++    kb.block_task(conn, tid, kind="capability", reason="CI approval pending")
++    calls = []
++    def refuse(*args):
++        calls.append(args)
++        return False
++    monkeypatch.setattr(kanban_pr_acceptance_store, "prepare_acceptance", refuse)
++    assert not kb.complete_task(conn, tid, summary="Locally tested but no required CI receipt")
++    assert calls and kb.get_task(conn, tid).status == "triage"
++
++
++def test_subscribed_adopted_card_is_included_but_foreign_session_is_not(incident):
++    conn, tid, _ = incident
++    adopted = kb.create_task(conn, title="Adopted work", assignee="worker", created_by="another-creator")
++    kb.claim_task(conn, adopted)
++    kb.block_task(conn, adopted, reason="External approval", kind="capability")
++    kbn.add_notify_sub(conn, task_id=adopted, platform="tui", chat_id="other-session",
++                       notifier_profile="coordinator")
++    assert scan()["scoped_count"] == 1
++    kbn.add_notify_sub(conn, task_id=adopted, platform="tui", chat_id="coordinator-session",
++                       notifier_profile="coordinator")
++    assert {card["task_id"] for card in scan()["cards"]} == {tid, adopted}
++
++
++def test_native_idle_driver_delivers_control_receipts_and_exhausts_budget(incident, monkeypatch):
++    conn, tid, eid = incident
++    record(conn, tid, eid, review_at="2026-10-25T10:00:00Z")
++    clock = [NOW.timestamp()]
++    monkeypatch.setattr(loops.time, "time", lambda: clock[0])
++    sid = "control-driver-session"
++    manager = loops.LoopManager(sid)
++    manager.set("Inspect follow-up using read-only controller", interval_seconds=86400, times=3)
++    sess = {"session_key": sid, "history_lock": threading.RLock(), "running": True}
++    receipts = []
++    monkeypatch.setattr(server, "_emit", lambda *args: None)
++    def submit(rid, ui_sid, session, text, **kwargs):
++        assert ui_sid == "control-ui" and "Inspect follow-up" in text
++        result = control.report(kb.kanban_db_path(), coordinator="coordinator",
++                                session_id="coordinator-session", now=datetime.fromtimestamp(clock[0], UTC))
++        receipts.append(result["due_count"])
++        loops.LoopManager(sid).complete_tick("Current prerequisite checked; no auto-unblock")
++        session["running"] = False
++        return True
++    monkeypatch.setattr(server, "_run_prompt_submit", submit)
++    server._maybe_fire_tui_loop_tick("control-ui", sess)
++    assert not receipts  # busy session defers, not loses, the due control.
++    sess["running"] = False
++    for _ in range(3):
++        server._maybe_fire_tui_loop_tick("control-ui", sess)
++        server._maybe_fire_tui_loop_tick("control-ui", sess)
++        clock[0] += 86400
++    server._maybe_fire_tui_loop_tick("control-ui", sess)
++    assert receipts == [0, 1, 1]
++    assert loops.LoopManager(sid).state.status == "done"
++    assert kb.get_task(conn, tid).status == "blocked"
+diff --git a/tests/tui_gateway/test_kanban_block_followup_notifications.py b/tests/tui_gateway/test_kanban_block_followup_notifications.py
+new file mode 100644
+--- /dev/null
++++ b/tests/tui_gateway/test_kanban_block_followup_notifications.py
+@@ -0,0 +1,38 @@
++"""Synthetic receipts only: no Desktop client, inference or external delivery."""
++from types import SimpleNamespace
++
++import pytest
++
++from hermes_cli import kanban_db as kb
++from hermes_cli import kanban_db_connect as kbc
++from hermes_cli import kanban_db_notify as kbn
++from tui_gateway import server
++
++
++@pytest.mark.parametrize("kind", ["blocked", "block_loop_detected", "review_requested", "changes_requested"])
++def test_attention_event_is_claimed_once_for_exact_session(kind):
++    with kbc.connect_closing() as conn:
++        tid = kb.create_task(conn, title="Synthetic attention", assignee="worker", created_by="coordinator")
++        kbn.add_notify_sub(conn, task_id=tid, platform="tui", chat_id="synthetic-owner",
++                           notifier_profile="coordinator")
++        kb._append_event(conn, tid, kind, {"reason": "Read full evidence before deciding", "summary": "Ready for review"})
++        assert server._collect_kanban_notifications({"session_key": "foreign"}) == []
++        texts = server._collect_kanban_notifications({"session_key": "synthetic-owner"})
++        assert len(texts) == 1
++        assert tid in texts[0]
++        if kind in {"blocked", "block_loop_detected"}:
++            assert "BLOCK_FOLLOWUP_V1" in texts[0]
++            assert "@coordinator" in texts[0]
++            assert "dated review" in texts[0]
++            assert "No automatic unblock" in texts[0]
++        assert server._collect_kanban_notifications({"session_key": "synthetic-owner"}) == []
++
++
++@pytest.mark.parametrize("kind", ["blocked", "block_loop_detected"])
++def test_block_reason_retains_action_after_legacy_clip(kind):
++    reason = "Context " * 24 + "ACTION REQUIRED"
++    text = server._format_kanban_event_text(
++        {"task_id": "synthetic"}, SimpleNamespace(title="Synthetic", assignee="worker", created_by="coordinator"),
++        SimpleNamespace(kind=kind, payload={"reason": reason}), "")
++    assert text is not None and "ACTION REQUIRED" in text
++    assert "inspect this card" in text
+diff --git a/tui_gateway/session_notifications.py b/tui_gateway/session_notifications.py
+--- a/tui_gateway/session_notifications.py
++++ b/tui_gateway/session_notifications.py
+@@ -145,7 +145,8 @@
+ 
+ # Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the cursor advances
+ # past them and they can't wedge a later completed/blocked event behind an unclaimed row.
+-_KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
++_KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked",
++                        "block_loop_detected", "review_requested", "changes_requested")
+ # kanban, /loop + /heartbeat and the bot mailbox share one idle-poll cadence; probing the lease registry on
+ # every 0.5s queue timeout cost ~a core at 11 sessions (#108005).
+ _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0
+@@ -395,10 +396,25 @@
+     return " timed out (max_runtime=0s); will retry"
+ 
+ 
++def _kb_block_followup(task, payload: dict, title: str) -> str:
++    coordinator = getattr(task, "created_by", None) or "the coordinator"
++    reason = _kb_first_line(payload.get("reason") or "Reason not recorded", 600)
++    return (reason + f"\nNext: @{coordinator}, inspect this card, separate independent work from the blocker, "
++            "and record the next action, its owner and a dated review in a BLOCK_FOLLOWUP_V1 comment. "
++            "No automatic unblock or retry without a changed prerequisite.")
++
++
+ # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.
+ _KANBAN_EVENT_FORMATTERS = {
+     "completed": ("✔", _kb_completed),
+-    "blocked": ("⏸", lambda t, p, title: " blocked" + (f": {str(p.get('reason'))[:160]}" if p.get("reason") else "")),
++    "blocked": ("⏸", lambda t, p, title: " blocked" + _kb_block_followup(t, p, title)),
++    "block_loop_detected": ("⚠", lambda t, p, title: " routed to triage after repeated blocks; "
++                            "orchestration attention required, no automatic retry"
++                            + _kb_block_followup(t, p, title)),
++    "review_requested": ("🔎", lambda t, p, title: f" review requested - {title}"
++                         + _kb_first_line(p.get("summary") or "", 200)),
++    "changes_requested": ("↩", lambda t, p, title: " changes requested"
++                          + _kb_first_line(p.get("reason") or "", 200)),
+     "gave_up": ("✖", lambda t, p, title: " gave up after repeated spawn failures"
+                 + (f"\n{str(p.get('error'))[:200]}" if p.get("error") else "")),
+     "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),

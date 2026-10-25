@@ -1,0 +1,36 @@
+{
+  "base_commit": "bf0203a794a07aac3ff764972ab9087baa4e4f4e",
+  "files": {
+    "gateway/kanban_watchers_notifier.py": {
+      "after_sha256": "c6dd8cfdfbdea7b8a6213e7f857f23a94a63e3238ba8d82fb2f0b10c64be2dc6",
+      "before_sha256": "a2f2f04c5d517ae737be61c16a319470edae4216f719da59527d542dea0e91ed"
+    },
+    "hermes_cli/kanban_db.py": {
+      "after_sha256": "e3e3ecbea4c6b6a8aa0c9b3d3f0789f739ff1b3e35f7e919a1ff2c5e814f3ca2",
+      "before_sha256": "fab46dc6b1df90c77275a21c467ce003ce1d9436f68dcb8ddcdb89c1d3c4a31b"
+    },
+    "scripts/kanban_block_followup.py": {
+      "after_sha256": "9e9dd717cde68dce53a301f301e0411bf7b42a048583de0bbcfc9d5f4cabd67e",
+      "before_sha256": null
+    },
+    "tests/gateway/test_kanban_block_followup_wake.py": {
+      "after_sha256": "193994c707dd0b4be8801552f0e4e29f121fa7729066bdfc1828b98e5ce0f3a7",
+      "before_sha256": null
+    },
+    "tests/hermes_cli/test_kanban_block_followup.py": {
+      "after_sha256": "9563dba46d4721467509d525693c81f0bbee79b1f2492f181bc4ba49b1ecf664",
+      "before_sha256": null
+    },
+    "tests/tui_gateway/test_kanban_block_followup_notifications.py": {
+      "after_sha256": "a9b7ba182c9fd7eb4f3dbb7c91b71e5fc4c119363c7d1aba616b4444e8c184e3",
+      "before_sha256": null
+    },
+    "tui_gateway/session_notifications.py": {
+      "after_sha256": "5cfd2f8bd446d1a57ad002199e63618b9ef30bb6019ee531abf48584cd5ae041",
+      "before_sha256": "22e7ce2953eeb665c0324f22a9456005ccf14df3086bf21fc878c1d6d2c6e7f6"
+    }
+  },
+  "patch_sha256": "299c6a7446367e0c4f401d27846a4334fca1ba28ce04e8deaab6d0380002d023",
+  "schema": 1,
+  "version": "0.1.0-rc.1"
+}
