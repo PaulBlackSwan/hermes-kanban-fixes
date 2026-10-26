@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0-rc.3
+
+- Documentation/privacy release: remove unrelated integration references from
+  current documentation and publish under the public maintainer pseudonym.
+- The functional patch, exact base and all nine source before/after hashes are
+  byte-for-byte unchanged from rc.2. Refresh the release version, manifest digest
+  and installer pin only; existing release assets remain unchanged.
+- This is not an incremental upgrade. An rc.2-patched tree is already equivalent
+  in target bytes, but rollback still requires the rc.2 installer and its ledger.
+  The rc.3 installer does not adopt another release's backup ownership.
+- Qualification: 15 distribution tests passed without skips, including from the
+  extracted archive; reproducible archives and forward/reverse source hashes
+  verified. No new runtime test run or deployment is claimed for this release.
+
 ## 0.1.0-rc.2
 
 - Add the omitted core local wake fix: `LocalSessionAdapter.__init__` binds

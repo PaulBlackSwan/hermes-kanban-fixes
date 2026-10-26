@@ -15,8 +15,8 @@ import subprocess
 import sys
 
 BASE = 'bf0203a794a07aac3ff764972ab9087baa4e4f4e'
-VERSION = '0.1.0-rc.2'
-MANIFEST_SHA256 = '79314a8e6a0bdf1567e5f1ef4d998a7470cbd9b6f71d366d58011acbbc49d384'
+VERSION = '0.1.0-rc.3'
+MANIFEST_SHA256 = 'fcb540f415210fa20d5166944d022a310642a3316e56b14ba0b5822aca9dee05'
 NAMES = (
     'gateway/kanban_watchers_notifier.py',
     'gateway/session_local.py',

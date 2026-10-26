@@ -42,7 +42,7 @@ It never invokes Git reset/stash/checkout, package installs or core imports.
 Unrelated dirty files are preserved. The backup is:
 
 ```text
-<source>/.hermes-kanban-fixes/0.1.0-rc.2/
+<source>/.hermes-kanban-fixes/0.1.0-rc.3/
   ledger.json
   before/<four existing target paths>
 ```
@@ -73,11 +73,18 @@ has no cleanup, force or ignore-checks option.
 ### Upgrading from rc.1
 
 This is a complete exact-base bundle, not an incremental patch. An rc.1 target
-is a partial state for rc.2 and is deliberately refused without writes. Preserve
+is a partial state for rc.3 and is deliberately refused without writes. Preserve
 local edits, then use the trusted rc.1 installer and its matching ledger to
-roll back rc.1 before dry-running rc.2. Keep the rc.1 package and backup state.
+roll back rc.1 before dry-running rc.3. Keep the rc.1 package and backup state.
 A manually patched tree or a tree without the matching ledger needs deliberate
-manual reconciliation; rc.2 does not invent rollback ownership for it.
+manual reconciliation; rc.3 does not invent rollback ownership for it.
+
+### Existing rc.2 installations
+
+The rc.3 patch and target hashes are identical to rc.2. A matching target tree
+returns `already_applied`, not ownership of rc.2 backups. Use the rc.2 installer
+and its matching ledger for rollback. To install rc.3 with its own rollback
+state, first roll back rc.2 with that installer and preserve its package/backup.
 
 Exit 0 means dry-run, applied, already_applied or rolled_back as reported in JSON.
 Exit 2 (`REFUSED`) means no supported completion. A partial state is never treated

@@ -143,7 +143,7 @@ class Distribution(unittest.TestCase):
         with zipfile.ZipFile(archives[0]) as z:
             names = z.namelist()
             self.assertEqual(len(names), len(set(names)))
-            self.assertFalse(any(any(x in n for x in ('.git/', 'verification/', '__pycache__/', 'voice', '.venv/', 'node_modules/')) for n in names))
+            self.assertFalse(any(any(x in n for x in ('.git/', 'verification/', '__pycache__/', '.venv/', 'node_modules/')) for n in names))
             sums = z.read('SHA256SUMS').decode().splitlines()
             self.assertEqual(len(sums), len(names) - 1)
             for line in sums:
@@ -167,7 +167,7 @@ class Distribution(unittest.TestCase):
         regression = (self.source / 'tests/gateway/test_local_kanban_wake.py').read_text()
         self.assertIn("['default', 'beta']", regression)
         self.assertIn('assert not adapter.authorize_source(source)', regression)
-        # Reconstruct the old seven-path release: rc.2 must not accept it.
+        # Reconstruct the old seven-path release: current releases must refuse it.
         original = subprocess.check_output(['git', '-C', str(self.source), 'show', BASE + ':gateway/session_local.py'])
         (self.source / 'gateway/session_local.py').write_bytes(original)
         (self.source / 'tests/gateway/test_local_kanban_wake.py').unlink()

@@ -24,6 +24,12 @@ checksums, and installation/rollback from an extracted release.
 
 ## Runtime regression tests
 
+The rc.3 documentation/privacy release preserves the rc.2 patch and all nine
+before/after source hashes exactly. Its 15 distribution tests passed without
+skips both from source and the final extracted archive. Reproducibility and
+independent forward/reverse source hash checks were rerun. The runtime results
+below are historical rc.2 evidence, not a new runtime run for rc.3.
+
 The unified patch includes existing qualified regression tests. Run the target
 checkout's documented isolated runner for these files and relevant regressions:
 

@@ -1,8 +1,8 @@
-# Hermes Kanban fixes — 0.1.0-rc.2
+# Hermes Kanban fixes — 0.1.0-rc.3
 
 Standalone, offline **source patch bundle**, not a runtime plugin. This release
 preserves the qualified Kanban changes and fixes local-profile wake routing.
-It contains no audio integration and does not install or enable any plugin.
+It does not install or enable any plugin.
 
 ## Exact compatibility
 
